@@ -1,6 +1,6 @@
 ## RabbitMQ
 
-[RabbitMQ的投递性和有效性](./README1.MD)
+[RabbitMQ的投递性和有效性](./README1.md)
 
 ### RabbitMQ的安装
 
