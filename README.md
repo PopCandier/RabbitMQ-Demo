@@ -1,5 +1,7 @@
 ## RabbitMQ
 
+[RabbitMQ的投递性和有效性](./README1.MD)
+
 ### RabbitMQ的安装
 
 因为RabbitMQ是Erlang语言编写的，且遵循AMQP规范（消息中间件的规范），所以我们需要下载Erlang的，并安装它。
@@ -284,4 +286,124 @@ public class MyProducer {
 ### 系统独有的RabbitMQ
 
 倘若你这个系统用RabbitMQ用得很好，但是其他系统也想用，是否需要重新启动一个rabbitmq服务呢，其实没必要，因为rabbitmq提供了vhost的机制，相当于namesapce，你可以创建多个vhost，虚拟主机，来帮助你建立互相不影响的命名空间。
+
+### TTL
+
+RabbitMQ中存在消息的过期时间，你可以通过针对Queue来设定过期时间，也可以对单个的Message进行过期时间。
+
+```java
+ @Bean("ttlQueue")
+    public Queue queue() {
+        Map<String, Object> map = new HashMap<String, Object>();
+        map.put("x-message-ttl", 11000); // 队列中的消息未被消费11秒后过期
+        // map.put("x-expire", 30000); // 队列30秒没有使用以后会被删除
+        return new Queue("GP_TTL_QUEUE", true, false, false, map);
+    }
+```
+
+也可以针对一个消息来设置，如果同时设置，优先使用Message的
+
+```java
+MessageProperties messageProperties = new MessageProperties();
+        messageProperties.setExpiration("4000"); // 消息的过期属性，单位ms
+        messageProperties.setDeliveryMode(MessageDeliveryMode.PERSISTENT);
+        Message message = new Message("这条消息4秒后过期".getBytes(), messageProperties);
+```
+
+### 死信队列（Dead Letter）
+
+也被称为DLQ，首先，死信队列也只是一个普通的Queue，一个普通的队列，只不过他会存放一些“死亡”的消息。死信交换机会和死信队列绑定。如果你想创建一个这样的东西，首先你要为一个队列创建一个死信交换器，然后在创建一个新的队列作为死信队列和他绑定起来。
+
+![1566835928990](C:\Users\99405\AppData\Roaming\Typora\typora-user-images\1566835928990.png)
+
+为一个Queue添加一个死信交换机，该交换机所有的死信都会路由到这个条队列中去。
+
+* 消息被消费者拒绝
+* 消息过期
+* 队列到达了最大长度
+  * ![1566836055640](C:\Users\99405\AppData\Roaming\Typora\typora-user-images\1566836055640.png)
+  * x-max-length 表示的是可以存多少个消息。例如10000条消息。
+  * x-max-length-bytes 表示可以存多少容量的消息，例如2g
+
+```java
+ @Bean("deatLetterExchange")
+    public TopicExchange deadLetterExchange() {
+        return new TopicExchange("GP_DEAD_LETTER_EXCHANGE", true, false, new HashMap<>());
+    }
+
+    @Bean("deatLetterQueue")
+    public Queue deadLetterQueue() {
+        return new Queue("GP_DEAD_LETTER_QUEUE", true, false, false, new HashMap<>());
+    }
+
+//将他们绑定
+@Bean
+    public Binding bindingDead(@Qualifier("deatLetterQueue") Queue queue,@Qualifier("deatLetterExchange") TopicExchange exchange) {
+        return BindingBuilder.bind(queue).to(exchange).with("#"); // 无条件路由
+    }
+
+```
+
+### 服务端的流控
+
+如果我们的信息堆积过多，应该如何，处理，我们是否可以用x-max-length或者
+
+x-max-length-bytes 来控制大小的呢，答案是不可以的，因为x-max-length会先入队的
+
+消息删除，如果是秒杀场景，那么这个是不公平的。
+
+所以对于服务器而言，他有两种方案，第一种是
+
+* 内存控制， 当你的内存使用大于40%的时候，rabbitmq会给你一个警告，并且阻止所有的连接。
+
+  * vm_memory_high_watermark
+
+* 磁盘控制  低于一个数值的时候，就阻止生产者发布消息
+
+  * ```
+    disk_free_limit.relative = 3.0 这里是30%
+    disk_free_limit.absolute = 2GB
+    ```
+
+### 消费端的限流
+
+prefetch count
+
+如果你的消费端消费消息比较慢，那么你可以通过消费端设置一个参数，这样当消费者受到这么多的消息但是还没有给生产者回应的话，broker就不会再给消息他了。
+
+```java
+ @Bean
+    public SimpleMessageListenerContainer messageContainer(ConnectionFactory connectionFactory) {
+        SimpleMessageListenerContainer container = new SimpleMessageListenerContainer(connectionFactory);
+        container.setQueues(getSecondQueue(), getThirdQueue()); //监听的队列
+        container.setConcurrentConsumers(1); // 最小消费者数
+        container.setMaxConcurrentConsumers(5); //  最大的消费者数量
+        container.setDefaultRequeueRejected(false); //是否重回队列
+        container.setAcknowledgeMode(AcknowledgeMode.AUTO); //签收模式，问题：如何单独设置某个队列的消费者为手动签收？
+        container.setExposeListenerChannel(true);
+        container.setPrefetchCount(5);//这里
+        container.setConsumerTagStrategy(new ConsumerTagStrategy() {    //消费端的标签策略
+            @Override
+            public String createConsumerTag(String queue) {
+                return queue + "_" + UUID.randomUUID().toString();
+            }
+        });
+        return container;
+    }
+```
+
+yml也可以配置
+
+```
+spring.rabbitmq.listener.simple.prefetch
+```
+
+### Spring AMQP
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-amqp</artifactId>
+</dependency>
+```
 
